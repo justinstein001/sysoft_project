@@ -26,10 +26,10 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'sysoft_db'
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'sysoft_db'
 });
 
 db.connect(err => {
@@ -295,4 +295,8 @@ app.delete('/api/admin/orders/:id', (req, res) => {
     });
 });
 
-app.listen(5000, () => console.log('🚀 [SYSOFT Final Engine] Live on Port 5000'));
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
