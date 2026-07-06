@@ -25,6 +25,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
+// Complete database configuration block mapped securely to your cloud parameters
 const db = mysql.createConnection({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -77,7 +78,7 @@ app.post('/api/admin/products', upload.single('productImage'), (req, res) => {
     const imageUrl = req.file ? `/uploads/${req.file.filename}` : '';
     
     const sql = "INSERT INTO products (name, price, stock_quantity, description, image_url) VALUES (?, ?, ?, ?, ?)";
-    db.query(sql, [name, price, stock_quantity, description, imageUrl], (err, result) => {
+    db.query(sql, [name, price, stock_quantity || 0, description, imageUrl], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true, productId: result.insertId });
     });
@@ -91,13 +92,13 @@ app.put('/api/admin/products/:id', upload.single('productImage'), (req, res) => 
     if (req.file) {
         const imageUrl = `/uploads/${req.file.filename}`;
         const sql = "UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ?, image_url = ? WHERE id = ?";
-        db.query(sql, [name, price, stock_quantity, description, imageUrl, productId], (err, result) => {
+        db.query(sql, [name, price, stock_quantity || 0, description, imageUrl, productId], (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true, message: "Product and image updated successfully!" });
         });
     } else {
         const sql = "UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ? WHERE id = ?";
-        db.query(sql, [name, price, stock_quantity, description, productId], (err, result) => {
+        db.query(sql, [name, price, stock_quantity || 0, description, productId], (err, result) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ success: true, message: "Product updated successfully!" });
         });
@@ -139,14 +140,14 @@ app.post('/api/checkout', (req, res) => {
         ? items.map(item => `${item.name} (x${item.quantity})`).join(', ')
         : 'N/A';
 
-    const sql = "INSERT INTO orders (full_name, email, phone, district, delivery_address, transaction_reference, total_amount, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)";
+    const sql = "INSERT INTO orders (full_name, email, phone, district, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)";
     
-    db.query(sql, [fullName, email, phone, district, deliveryAddress, txRef, totalAmount, productsSummary], (err, result) => {
+    db.query(sql, [fullName, email, phone, district, totalAmount, txRef, productsSummary], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         
         const orderId = result.insertId;
 
-        // Requirement 2: Deduct quantities from remaining inventory stock
+        // Deduct quantities from remaining inventory stock
         if (Array.isArray(items)) {
             items.forEach(item => {
                 const updateStockSql = "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?";
@@ -156,7 +157,6 @@ app.post('/api/checkout', (req, res) => {
             });
         }
 
-        // Requirement 1: Build product listing matching your original structural format
         let itemsHtmlRows = '';
         if (Array.isArray(items)) {
             itemsHtmlRows = items.map(item => `
@@ -170,19 +170,16 @@ app.post('/api/checkout', (req, res) => {
             itemsHtmlRows = `<tr><td colspan="3" style="padding: 8px; text-align: center;">No structured item elements detected.</td></tr>`;
         }
 
-        // Customer Email: Preserved exact style format incorporating item data table seamlessly
+        // Customer Email Style
         const customerHtml = `
             <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; padding: 25px; border-radius: 8px;">
                 <div style="text-align: center; border-bottom: 3px solid #2ecc71; padding-bottom: 15px;">
                     <h1 style="color: #2ecc71; margin: 0; font-size: 24px;">Thank You for Your Purchase!</h1>
                 </div>
-                
                 <p style="font-size: 16px;">Dear <strong>${fullName}</strong>,</p>
-                <p>We truly appreciate your business and are thrilled that you choose to shop with <strong>SYSOFT Shop</strong> today! Your order has been registered successfully.</p>
-                
+                <p>We truly appreciate your business and are thrilled that you choose to shop with <strong>...</strong> today!</p>
                 <div style="background-color: #f9f9f9; border-left: 4px solid #2ecc71; padding: 15px; margin: 20px 0;">
                     <h3 style="margin-top: 0; color: #2c3e50;">Order Summary (#00${orderId}):</h3>
-                    
                     <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 14px;">
                         <thead>
                             <tr style="background-color: #eee;">
@@ -195,31 +192,19 @@ app.post('/api/checkout', (req, res) => {
                             ${itemsHtmlRows}
                         </tbody>
                     </table>
-
                     <p style="margin: 5px 0;"><strong>Total Items Amount:</strong> <span style="color: #2ecc71; font-weight: bold;">${parseInt(totalAmount).toLocaleString()} RWF</span></p>
                     <p style="margin: 5px 0;"><strong>Shipping Zone Specified:</strong> ${district}</p>
-                    <p style="margin: 5px 0;"><strong>Exact Dropoff Destination:</strong> ${deliveryAddress}</p>
                 </div>
-
-                <div style="background-color: #fcf8e3; border: 1px solid #faebcc; color: #8a6d3b; padding: 15px; border-radius: 5px; margin: 25px 0; font-size: 15px;">
-                    <strong>📦 Important Delivery Notice:</strong> Please note: Delivery fees are calculated based on your location and will be paid directly to the courier driver upon arrival. Please be patient while waiting for delivery, as our logistics team handles your setup safely!
-                </div>
-
-                <p>If you have any dynamic order customization requests, reply directly to this thread.</p>
                 <p style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;">Warm regards,<br><strong>The SYSOFT Shop Team</strong></p>
             </div>
         `;
 
-        // Admin Email: Preserved style format incorporating the item list data table seamlessly
+        // Admin Notification Email
         const adminHtml = `
             <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ccc; padding: 25px; border-radius: 8px;">
                 <div style="background-color: #2c3e50; padding: 15px; text-align: center; border-radius: 6px 6px 0 0;">
                     <h2 style="color: #ffffff; margin: 0; font-size: 20px;">🚨 New Store Order #00${orderId}</h2>
                 </div>
-                
-                <p style="font-size: 15px; margin-top: 20px;">Hello Admin,</p>
-                <p>A new purchase has been processed across the store interface. Please review the customer logs below:</p>
-                
                 <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9; width: 35%;">Client Name:</td>
@@ -227,40 +212,13 @@ app.post('/api/checkout', (req, res) => {
                     </tr>
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Products Sold:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; color: #c0392b;">
-                            <table style="width: 100%; border-collapse: collapse; font-size: 13px; font-weight: normal; color: #333;">
-                                <tr style="background-color: #f2f2f2;">
-                                    <th style="padding: 4px; text-align: left;">Item</th>
-                                    <th style="padding: 4px; text-align: center;">Qty</th>
-                                </tr>
-                                ${itemsHtmlRows}
-                            </table>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">District Location:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">${district}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Address Particulars:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">${deliveryAddress}</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${productsSummary}</td>
                     </tr>
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Total Price Paid:</td>
                         <td style="padding: 10px; border: 1px solid #ddd; color: #27ae60; font-weight: bold;">${parseInt(totalAmount).toLocaleString()} RWF</td>
                     </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Transaction ID Reference:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-family: monospace;">${txRef}</td>
-                    </tr>
                 </table>
-
-                <div style="margin: 25px 0; text-align: center;">
-                    <p style="margin-bottom: 15px; font-weight: bold; color: #e67e22;">Action Required: Please evaluate this request to approve or reject dispatch.</p>
-                    <a href="http://localhost:5000/admin.html" style="display: inline-block; padding: 12px 25px; color: #ffffff; background-color: #3498db; text-decoration: none; border-radius: 5px; font-weight: bold; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">Go to Admin Portal</a>
-                </div>
-                
-                <p style="font-size: 11px; color: #95a5a6; border-top: 1px solid #eee; padding-top: 15px; margin-top: 20px; text-align: center;">SYSOFT Automated Dispatch Notification Protocol.</p>
             </div>
         `;
 
@@ -272,7 +230,7 @@ app.post('/api/checkout', (req, res) => {
 });
 
 app.get('/api/admin/orders', (req, res) => {
-    const sql = "SELECT id, full_name, email, phone, district, delivery_address, transaction_reference, total_amount, payment_status, products_ordered FROM orders ORDER BY id DESC";
+    const sql = "SELECT * FROM orders ORDER BY id DESC";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json(results);
@@ -297,7 +255,6 @@ app.delete('/api/admin/orders/:id', (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
