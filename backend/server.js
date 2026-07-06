@@ -13,6 +13,9 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
 
+// 1. Serve frontend assets automatically out of a folder named 'public'
+app.use(express.static(path.join(__dirname, 'public')));
+
 const uploadsDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadsDir)){
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -26,7 +29,6 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // Complete database configuration block mapped securely to your cloud parameters
-//  NEW WAY (Connection Pool handles reconnections automatically)
 const db = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -48,6 +50,21 @@ db.getConnection((err, connection) => {
     }
 });
 
+// In-memory token store matching tokens generated during admin login
+const activeAdminTokens = new Set();
+
+// Middleware to secure admin endpoints against unauthorized API queries
+const verifyAdminSession = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Access Denied: Missing session parameters.' });
+    }
+    const token = authHeader.split(' ')[1];
+    if (!activeAdminTokens.has(token)) {
+        return res.status(403).json({ error: 'Access Denied: Expired or unauthenticated credentials.' });
+    }
+    next();
+};
 
 const emailTransporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
@@ -82,8 +99,8 @@ app.get('/api/products', (req, res) => {
     });
 });
 
-// POST new product
-app.post('/api/admin/products', upload.single('productImage'), (req, res) => {
+// POST new product (Secured)
+app.post('/api/admin/products', verifyAdminSession, upload.single('productImage'), (req, res) => {
     const { name, price, stock_quantity, description } = req.body;
     const imageUrl = req.file ? `/uploads/${req.file.filename}` : '';
     
@@ -94,8 +111,8 @@ app.post('/api/admin/products', upload.single('productImage'), (req, res) => {
     });
 });
 
-// PUT (Update) an existing product
-app.put('/api/admin/products/:id', upload.single('productImage'), (req, res) => {
+// PUT (Update) an existing product (Secured)
+app.put('/api/admin/products/:id', verifyAdminSession, upload.single('productImage'), (req, res) => {
     const { name, price, stock_quantity, description } = req.body;
     const productId = req.params.id;
     
@@ -115,8 +132,8 @@ app.put('/api/admin/products/:id', upload.single('productImage'), (req, res) => 
     }
 });
 
-// DELETE a product from the inventory
-app.delete('/api/admin/products/:id', (req, res) => {
+// DELETE a product from the inventory (Secured)
+app.delete('/api/admin/products/:id', verifyAdminSession, (req, res) => {
     const productId = req.params.id;
     const sql = "DELETE FROM products WHERE id = ?";
     db.query(sql, [productId], (err, result) => {
@@ -125,6 +142,7 @@ app.delete('/api/admin/products/:id', (req, res) => {
     });
 });
 
+// Admin Authentication Gateway
 app.post('/api/admin/login', (req, res) => {
     const { username, password } = req.body;
     const hashedPassword = crypto.createHash('md5').update(password).digest('hex');
@@ -135,6 +153,7 @@ app.post('/api/admin/login', (req, res) => {
         
         if (results.length > 0) {
             const tempToken = crypto.randomBytes(16).toString('hex');
+            activeAdminTokens.add(tempToken); // track valid session tokens matching front end logic
             res.json({ success: true, token: tempToken });
         } else {
             res.json({ success: false, message: 'Invalid credentials provided!' });
@@ -187,7 +206,7 @@ app.post('/api/checkout', (req, res) => {
                     <h1 style="color: #2ecc71; margin: 0; font-size: 24px;">Thank You for Your Purchase!</h1>
                 </div>
                 <p style="font-size: 16px;">Dear <strong>${fullName}</strong>,</p>
-                <p>We truly appreciate your business and are thrilled that you choose to shop with <strong>...</strong> today!</p>
+                <p>We truly appreciate your business and are thrilled that you choose to shop with us today!</p>
                 <div style="background-color: #f9f9f9; border-left: 4px solid #2ecc71; padding: 15px; margin: 20px 0;">
                     <h3 style="margin-top: 0; color: #2c3e50;">Order Summary (#00${orderId}):</h3>
                     <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 14px;">
@@ -239,7 +258,8 @@ app.post('/api/checkout', (req, res) => {
     });
 });
 
-app.get('/api/admin/orders', (req, res) => {
+// GET Admin Orders (Secured)
+app.get('/api/admin/orders', verifyAdminSession, (req, res) => {
     const sql = "SELECT * FROM orders ORDER BY id DESC";
     db.query(sql, (err, results) => {
         if (err) return res.status(500).json({ error: err.message });
@@ -247,7 +267,8 @@ app.get('/api/admin/orders', (req, res) => {
     });
 });
 
-app.patch('/api/admin/orders/:id/status', (req, res) => {
+// PATCH Order Status (Secured)
+app.patch('/api/admin/orders/:id/status', verifyAdminSession, (req, res) => {
     const { payment_status } = req.body;
     const sql = "UPDATE orders SET payment_status = ? WHERE id = ?";
     db.query(sql, [payment_status, req.params.id], (err, result) => {
@@ -256,12 +277,18 @@ app.patch('/api/admin/orders/:id/status', (req, res) => {
     });
 });
 
-app.delete('/api/admin/orders/:id', (req, res) => {
+// DELETE an order (Secured)
+app.delete('/api/admin/orders/:id', verifyAdminSession, (req, res) => {
     const sql = "DELETE FROM orders WHERE id = ?";
     db.query(sql, [req.params.id], (err, result) => {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true });
     });
+});
+
+// Fallback Route to serve index.html for any remaining root web requests
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const PORT = process.env.PORT || 5000;
