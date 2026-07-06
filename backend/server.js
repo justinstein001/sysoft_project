@@ -26,18 +26,28 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 // Complete database configuration block mapped securely to your cloud parameters
-const db = mysql.createConnection({
+//  NEW WAY (Connection Pool handles reconnections automatically)
+const db = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'defaultdb', 
-    port: process.env.DB_PORT || 17499           
+    port: process.env.DB_PORT || 17499,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
 
-db.connect(err => {
-    if (err) console.error('❌ Database connection failure:', err.message);
-    else console.log('✅ Connected to MySQL Database successfully.');
+// Test the pool connection instantly on startup
+db.getConnection((err, connection) => {
+    if (err) {
+        console.error('❌ Database pool connection failure:', err.message);
+    } else {
+        console.log('✅ Connected to MySQL Database Pool successfully.');
+        connection.release(); // send it back to the pool
+    }
 });
+
 
 const emailTransporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
