@@ -114,13 +114,21 @@
 <script>
     const API_BASE = 'https://sysoft-server.onrender.com';
     
-    let dynamicSessionToken = null;
+    let dynamicSessionToken = localStorage.getItem('adminToken') || null;
     let activeEditingProductId = null;
+
+    // Check if token exists on load
+    window.addEventListener('DOMContentLoaded', () => {
+        if (dynamicSessionToken) {
+            showDashboardContent();
+        }
+    });
 
     async function executeAdminAuth(e) {
         e.preventDefault();
         try {
-            const res = await fetch(`${API_BASE}/admin/login`, {
+            // Added /api prefix to match route architecture
+            const res = await fetch(`${API_BASE}/api/admin/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -131,9 +139,14 @@
             const data = await res.json();
             if(data.success) {
                 dynamicSessionToken = data.token;
+                localStorage.setItem('adminToken', data.token); // Save session persistence layer
                 showDashboardContent();
-            } else { alert(data.message); }
-        } catch(e) { alert("Authorization handshake failure."); }
+            } else { 
+                alert(data.message || "Invalid credentials provided."); 
+            }
+        } catch(e) { 
+            alert("Authorization handshake failure. Ensure your credentials match schema records."); 
+        }
     }
 
     function showDashboardContent() {
@@ -145,6 +158,7 @@
 
     function logoutAdmin() {
         dynamicSessionToken = null;
+        localStorage.removeItem('adminToken');
         location.reload();
     }
 
@@ -152,9 +166,15 @@
         if (!dynamicSessionToken) return;
         const tbody = document.getElementById('ordersTableBody');
         try {
-            const res = await fetch(`${API_BASE}/admin/orders`, {
+            const res = await fetch(`${API_BASE}/api/admin/orders`, {
                 headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
             });
+            
+            if (res.status === 401 || res.status === 403) {
+                handleExpiredSession();
+                return;
+            }
+
             const orders = await res.json();
             tbody.innerHTML = '';
             if(orders.length === 0) {
@@ -191,7 +211,7 @@
     async function updateOrderStatus(id, nextStatus) {
         if (!dynamicSessionToken) return;
         try {
-            const res = await fetch(`${API_BASE}/admin/orders/${id}/status`, {
+            const res = await fetch(`${API_BASE}/api/admin/orders/${id}/status`, {
                 method: 'PATCH',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -200,6 +220,11 @@
                 body: JSON.stringify({ payment_status: nextStatus })
             });
             
+            if (res.status === 401 || res.status === 403) {
+                handleExpiredSession();
+                return;
+            }
+
             if (res.ok) {
                 fetchAdminOrders();
                 fetchInventoryProducts();
@@ -216,10 +241,16 @@
         if (!dynamicSessionToken) return;
         if(confirm(`Are you sure you want to permanently delete and remove Order #00${id}?`)) {
             try {
-                const res = await fetch(`${API_BASE}/admin/orders/${id}`, { 
+                const res = await fetch(`${API_BASE}/api/admin/orders/${id}`, { 
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
                 });
+                
+                if (res.status === 401 || res.status === 403) {
+                    handleExpiredSession();
+                    return;
+                }
+
                 if(res.ok) { fetchAdminOrders(); }
             } catch (err) { alert("Delete procedure encountered a runtime exception."); }
         }
@@ -238,7 +269,7 @@
             }
 
             products.forEach(p => {
-                const resolvedImgUrl = p.image_url ? `${API_BASE}${p.image_url}` : `${API_BASE}/uploads/placeholder.png`;
+                const resolvedImgUrl = p.image_url ? `${API_BASE}${p.image_url}` : `https://via.placeholder.com/36?text=No`;
                 directory.innerHTML += `
                     <div class="product-item-row">
                         <div style="display:flex; align-items:center; gap:10px;">
@@ -287,10 +318,16 @@
         if (!dynamicSessionToken) return;
         if(confirm("Are you sure you want to completely erase this product from the customer view?")) {
             try {
-                const res = await fetch(`${API_BASE}/admin/products/${id}`, { 
+                const res = await fetch(`${API_BASE}/api/admin/products/${id}`, { 
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
                 });
+
+                if (res.status === 401 || res.status === 403) {
+                    handleExpiredSession();
+                    return;
+                }
+
                 if(res.ok) {
                     alert("Asset successfully dropped from schema.");
                     if(activeEditingProductId === id) resetProductFormMode();
@@ -315,11 +352,11 @@
             formData.append('productImage', fileInput.files[0]);
         }
 
-        let requestUrl = `${API_BASE}/admin/products`;
+        let requestUrl = `${API_BASE}/api/admin/products`;
         let requestMethod = 'POST';
 
         if(activeEditingProductId) {
-            requestUrl = `${API_BASE}/admin/products/${activeEditingProductId}`;
+            requestUrl = `${API_BASE}/api/admin/products/${activeEditingProductId}`;
             requestMethod = 'PUT';
         }
 
@@ -329,12 +366,23 @@
                 headers: { 'Authorization': `Bearer ${dynamicSessionToken}` },
                 body: formData 
             });
+
+            if (res.status === 401 || res.status === 403) {
+                handleExpiredSession();
+                return;
+            }
+
             if(res.ok) {
                 alert(activeEditingProductId ? "Success: Asset updated configuration parameters!" : "Success: Asset deployed to store window!");
                 resetProductFormMode();
                 fetchInventoryProducts();
             }
         } catch (err) { alert("Form synchronization execution sequence encountered an error."); }
+    }
+
+    function handleExpiredSession() {
+        alert("Your admin session has expired or the server restarted. Please sign in again.");
+        logoutAdmin();
     }
 </script>
 </body>
