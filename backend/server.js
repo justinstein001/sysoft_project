@@ -93,14 +93,18 @@ async function sendNotificationEmail(recipient, subject, htmlContent) {
 }
 
 // GET all products
+// Look at your GET /api/products route:
 app.get('/api/products', async (req, res) => {
     const search = req.query.search || '';
     const sql = "SELECT * FROM products WHERE name LIKE ? OR description LIKE ?";
     try {
         const [results] = await db.query(sql, [`%${search}%`, `%${search}%`]);
-        res.json(results);
+        
+        // If results is empty or undefined, let's make sure it returns a clean array instead of throwing
+        res.json(results || []); 
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        // If err.message doesn't exist, fallback to the error object itself so it's never empty
+        res.status(500).json({ error: err.message || err || "Unknown database error" });
     }
 });
 
