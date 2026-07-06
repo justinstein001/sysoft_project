@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYSOFT Engine Console</title>
+    <style>
+        :root { --bg-main: #0f172a; --bg-card: #1e293b; --primary: #4f46e5; --text-dark: #f8fafc; --text-muted: #94a3b8; --border: #334155; --success: #10b981; --danger: #ef4444; --danger-hover: #dc2626; --warning: #f59e0b; }
+        body { font-family: system-ui, sans-serif; background-color: var(--bg-main); color: var(--text-dark); margin: 0; padding: 20px; }
+        .container { max-width: 1300px; margin: 0 auto; }
+        header { background: var(--bg-card); padding: 16px 24px; border-radius: 14px; margin-bottom: 25px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;}
+        .grid { display: grid; grid-template-columns: 1fr; gap: 25px; }
+        @media (min-width: 900px) { .grid { grid-template-columns: 2fr 1fr; } }
+        .card { background: var(--bg-card); border-radius: 14px; padding: 20px; border: 1px solid var(--border); box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-bottom: 25px; }
+        .table-responsive { width: 100%; overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; min-width: 700px; }
+        th, td { padding: 12px 14px; border-bottom: 1px solid var(--border); text-align: left; font-size: 13px; vertical-align: top; }
+        th { color: var(--text-muted); background: #0b111e; font-weight: 600; }
+        .form-group { margin-bottom: 14px; }
+        .form-group label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--text-muted); font-weight: 500; }
+        .form-group input, .form-group textarea { width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-main); color: var(--text-dark); box-sizing: border-box; outline: none; }
+        .btn-action { padding: 8px 14px; border-radius: 6px; border: none; font-weight: 600; cursor: pointer; font-size: 13px; transition: background 0.2s; }
+        .btn-delete { background: var(--danger); color: white; margin-left: 5px; }
+        .btn-delete:hover { background: var(--danger-hover); }
+        .btn-edit { background: var(--warning); color: #0f172a; font-weight: 700; margin-right: 5px;}
+        
+        #authScreen { position: fixed; top:0; left:0; width:100%; height:100%; background: var(--bg-main); display: flex; justify-content: center; align-items: center; z-index: 9999; }
+        .login-box { background: var(--bg-card); padding: 32px; border-radius: 16px; border: 1px solid var(--border); width: 100%; max-width: 340px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
+        .status-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; display: inline-block; }
+        .status-pending { background: rgba(234,179,8,0.2); color: #f59e0b; }
+        .status-completed { background: rgba(16,185,129,0.2); color: #10b981; }
+
+        .product-item-row { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .product-item-row:last-child { border-bottom: none; }
+    </style>
+</head>
+<body>
+
+<div id="authScreen">
+    <div class="login-box">
+        <h3 style="margin-top:0; text-align:center; font-size:22px; letter-spacing:-0.5px;">Terminal Gateway</h3>
+        <form onsubmit="executeAdminAuth(event)">
+            <div class="form-group">
+                <label>Administrative User</label>
+                <input type="text" id="authUser" required autocomplete="off" placeholder="Enter username">
+            </div>
+            <div class="form-group">
+                <label>Secure Password Key</label>
+                <input type="password" id="authPass" required placeholder="Enter password">
+            </div>
+            <button type="submit" class="btn-action" style="background:var(--primary); color:white; width:100%; padding:12px; margin-top:10px;">Sign In</button>
+        </form>
+    </div>
+</div>
+
+<div class="container" id="mainDashboard" style="display: none;">
+    <header>
+        <h2 style="margin:0; font-size:20px; font-weight:700;">SYSOFT Console Board</h2>
+        <button class="btn-action" style="background: #475569; color: white;" onclick="logoutAdmin()">Secure Exit</button>
+    </header>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="margin-top:0; font-size:16px;">🛒 Real-time Dispatch Logs</h3>
+            <div class="table-responsive">
+                <table>
+                    <thead>
+                        <tr><th>Order ID</th><th>Customer info</th><th>Delivery Destination Address</th><th>Bill Sum</th><th>Ref Code</th><th>State</th><th>Terminal Control Actions</th></tr>
+                    </thead>
+                    <tbody id="ordersTableBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div>
+            <div class="card">
+                <h3 style="margin-top:0; font-size:16px;" id="formPanelTitle">📦 Deploy New Stock Item</h3>
+                <form id="productForm" onsubmit="handleProductUpload(event)">
+                    <div class="form-group">
+                        <label>Product Title Name</label>
+                        <input type="text" id="prodName" required placeholder="e.g. Smart Watch">
+                    </div>
+                    <div class="form-row" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                        <div class="form-group">
+                            <label>Price (RWF)</label>
+                            <input type="number" id="prodPrice" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Stock Qty</label>
+                            <input type="number" id="prodStock" value="15" required>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Description Specs</label>
+                        <textarea id="prodDesc" rows="3" placeholder="Item key highlights..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label id="imageFieldLabel">Attach Product Display Image</label>
+                        <input type="file" id="prodImage" accept="image/*" required style="border:none; padding:4px 0; background:none;">
+                    </div>
+                    <button type="submit" id="submitFormBtn" class="btn-action" style="background:var(--primary); color:white; padding:12px; width:100%; margin-top:5px;">Upload Asset Instance</button>
+                    <button type="button" id="cancelEditBtn" class="btn-action" style="background:#475569; color:white; padding:10px; width:100%; margin-top:8px; display:none;" onclick="resetProductFormMode()">Cancel Modification</button>
+                </form>
+            </div>
+
+            <div class="card">
+                <h3 style="margin-top:0; font-size:16px;">📁 Active Product Directory</h3>
+                <div id="productDirectoryList" style="max-height:350px; overflow-y:auto; margin-top:10px; background:#0b111e; border-radius:8px; border:1px solid var(--border);"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const API_BASE = 'https://sysoft-server.onrender.com';
+    
+    let dynamicSessionToken = null;
+    let activeEditingProductId = null;
+
+    async function executeAdminAuth(e) {
+        e.preventDefault();
+        try {
+            const res = await fetch(`${API_BASE}/admin/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    username: document.getElementById('authUser').value,
+                    password: document.getElementById('authPass').value
+                })
+            });
+            const data = await res.json();
+            if(data.success) {
+                dynamicSessionToken = data.token;
+                showDashboardContent();
+            } else { alert(data.message); }
+        } catch(e) { alert("Authorization handshake failure."); }
+    }
+
+    function showDashboardContent() {
+        document.getElementById('authScreen').style.display = 'none';
+        document.getElementById('mainDashboard').style.display = 'block';
+        fetchAdminOrders();
+        fetchInventoryProducts();
+    }
+
+    function logoutAdmin() {
+        dynamicSessionToken = null;
+        location.reload();
+    }
+
+    async function fetchAdminOrders() {
+        if (!dynamicSessionToken) return;
+        const tbody = document.getElementById('ordersTableBody');
+        try {
+            const res = await fetch(`${API_BASE}/admin/orders`, {
+                headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
+            });
+            const orders = await res.json();
+            tbody.innerHTML = '';
+            if(orders.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; opacity:0.5;">No purchase records processed yet.</td></tr>';
+                return;
+            }
+            orders.forEach(order => {
+                const badgeClass = order.payment_status === 'PENDING' ? 'status-pending' : 'status-completed';
+                
+                tbody.innerHTML += `
+                    <tr>
+                        <td><b>#00${order.id}</b></td>
+                        <td>
+                            <b>${order.full_name}</b><br>
+                            <span style="color:var(--text-muted)">${order.phone}<br>${order.email}</span>
+                            <div style="margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px;">
+                                <span style="font-size: 11px; color: var(--warning); font-weight: 600;">Items:</span>
+                                <pre style="font-family: inherit; font-size: 11px; color: var(--text-dark); margin: 4px 0 0 0; white-space: pre-wrap; line-height: 1.4;">${order.products_ordered || 'No items listed'}</pre>
+                            </div>
+                        </td>
+                        <td><b style="color:var(--primary)">District: ${order.district}</b><br><span style="font-size:12px; opacity:0.9;">${order.delivery_address || 'Not Provided'}</span></td>
+                        <td><b>${parseInt(order.total_amount).toLocaleString()} RWF</b></td>
+                        <td><code>${order.transaction_reference}</code></td>
+                        <td><span class="status-badge ${badgeClass}">${order.payment_status}</span></td>
+                        <td style="white-space:nowrap;">
+                            ${order.payment_status === 'PENDING' ? `<button class="btn-action" style="background:var(--success); color:white;" onclick="updateOrderStatus(${order.id}, 'COMPLETED')">Approve</button>` : ''}
+                            <button class="btn-action btn-delete" onclick="deleteUnwantedOrder(${order.id})">Delete</button>
+                        </td>
+                    </tr>`;
+            });
+        } catch (err) { tbody.innerHTML = '<tr><td colspan="7">API Endpoint synchronization sync error.</td></tr>'; }
+    }
+
+    async function updateOrderStatus(id, nextStatus) {
+        if (!dynamicSessionToken) return;
+        try {
+            const res = await fetch(`${API_BASE}/admin/orders/${id}/status`, {
+                method: 'PATCH',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${dynamicSessionToken}`
+                },
+                body: JSON.stringify({ payment_status: nextStatus })
+            });
+            
+            if (res.ok) {
+                fetchAdminOrders();
+                fetchInventoryProducts();
+            } else {
+                const errData = await res.json();
+                alert(errData.error || "Failed to update order status.");
+            }
+        } catch(err) {
+            alert("Network error updating order status.");
+        }
+    }
+
+    async function deleteUnwantedOrder(id) {
+        if (!dynamicSessionToken) return;
+        if(confirm(`Are you sure you want to permanently delete and remove Order #00${id}?`)) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/orders/${id}`, { 
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
+                });
+                if(res.ok) { fetchAdminOrders(); }
+            } catch (err) { alert("Delete procedure encountered a runtime exception."); }
+        }
+    }
+
+    async function fetchInventoryProducts() {
+        const directory = document.getElementById('productDirectoryList');
+        try {
+            const res = await fetch(`${API_BASE}/api/products`);
+            const products = await res.json();
+            directory.innerHTML = '';
+            
+            if(products.length === 0) {
+                directory.innerHTML = '<p style="text-align:center; padding:20px; color:var(--text-muted); margin:0; font-size:13px;">No store assets currently tracking.</p>';
+                return;
+            }
+
+            products.forEach(p => {
+                const resolvedImgUrl = p.image_url ? `${API_BASE}${p.image_url}` : `${API_BASE}/uploads/placeholder.png`;
+                directory.innerHTML += `
+                    <div class="product-item-row">
+                        <div style="display:flex; align-items:center; gap:10px;">
+                            <img src="${resolvedImgUrl}" style="width:36px; height:36px; border-radius:6px; object-fit:cover; border:1px solid var(--border);" onerror="this.src='https://via.placeholder.com/36?text=No'">
+                            <div>
+                                <strong style="color:var(--text-dark);">${p.name}</strong><br>
+                                <span style="font-size:11px; color:var(--text-muted);">${parseInt(p.price).toLocaleString()} RWF • Stock: ${p.stock_quantity}</span>
+                            </div>
+                        </div>
+                        <div style="display:flex;">
+                            <button class="btn-action btn-edit" onclick="setupProductFormForEdit(${JSON.stringify(p).replace(/"/g, '&quot;')})">Edit</button>
+                            <button class="btn-action btn-delete" style="margin:0;" onclick="removeProductInstance(${p.id})">Delete</button>
+                        </div>
+                    </div>`;
+            });
+        } catch (err) { directory.innerHTML = '<p style="padding:15px; color:var(--danger);">Error loading directory matrix.</p>'; }
+    }
+
+    function setupProductFormForEdit(product) {
+        activeEditingProductId = product.id;
+        document.getElementById('formPanelTitle').innerText = "🔄 Modify Inventory Entry";
+        document.getElementById('prodName').value = product.name;
+        document.getElementById('prodPrice').value = product.price;
+        document.getElementById('prodStock').value = product.stock_quantity;
+        document.getElementById('prodDesc').value = product.description;
+        
+        document.getElementById('prodImage').required = false;
+        document.getElementById('imageFieldLabel').innerText = "Attach Product Display Image (Leave blank to keep old file)";
+        
+        document.getElementById('submitFormBtn').innerText = "Save Asset Structural Changes";
+        document.getElementById('cancelEditBtn').style.display = "block";
+        document.getElementById('prodName').focus();
+    }
+
+    function resetProductFormMode() {
+        activeEditingProductId = null;
+        document.getElementById('productForm').reset();
+        document.getElementById('formPanelTitle').innerText = "📦 Deploy New Stock Item";
+        document.getElementById('prodImage').required = true;
+        document.getElementById('imageFieldLabel').innerText = "Attach Product Display Image";
+        document.getElementById('submitFormBtn').innerText = "Upload Asset Instance";
+        document.getElementById('cancelEditBtn').style.display = "none";
+    }
+
+    async function removeProductInstance(id) {
+        if (!dynamicSessionToken) return;
+        if(confirm("Are you sure you want to completely erase this product from the customer view?")) {
+            try {
+                const res = await fetch(`${API_BASE}/admin/products/${id}`, { 
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${dynamicSessionToken}` }
+                });
+                if(res.ok) {
+                    alert("Asset successfully dropped from schema.");
+                    if(activeEditingProductId === id) resetProductFormMode();
+                    fetchInventoryProducts();
+                }
+            } catch (err) { alert("Delete procedure met a unexpected network fault."); }
+        }
+    }
+
+    async function handleProductUpload(e) {
+        e.preventDefault();
+        if (!dynamicSessionToken) return;
+
+        const formData = new FormData();
+        formData.append('name', document.getElementById('prodName').value);
+        formData.append('price', document.getElementById('prodPrice').value);
+        formData.append('stock_quantity', document.getElementById('prodStock').value);
+        formData.append('description', document.getElementById('prodDesc').value);
+        
+        const fileInput = document.getElementById('prodImage');
+        if(fileInput.files.length > 0) {
+            formData.append('productImage', fileInput.files[0]);
+        }
+
+        let requestUrl = `${API_BASE}/admin/products`;
+        let requestMethod = 'POST';
+
+        if(activeEditingProductId) {
+            requestUrl = `${API_BASE}/admin/products/${activeEditingProductId}`;
+            requestMethod = 'PUT';
+        }
+
+        try {
+            const res = await fetch(requestUrl, { 
+                method: requestMethod, 
+                headers: { 'Authorization': `Bearer ${dynamicSessionToken}` },
+                body: formData 
+            });
+            if(res.ok) {
+                alert(activeEditingProductId ? "Success: Asset updated configuration parameters!" : "Success: Asset deployed to store window!");
+                resetProductFormMode();
+                fetchInventoryProducts();
+            }
+        } catch (err) { alert("Form synchronization execution sequence encountered an error."); }
+    }
+</script>
+</body>
+</html>
