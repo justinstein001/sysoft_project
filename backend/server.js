@@ -80,7 +80,7 @@ const emailTransporter = nodemailer.createTransport({
     secure: true, 
     auth: {
         user: 'amahorojustin04@gmail.com',
-        pass: 'gtycgwpgogopsmch'
+        pass: 'fpkvwzogigobujav'
     }
 });
 
