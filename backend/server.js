@@ -67,9 +67,11 @@ const verifyAdminSession = (req, res, next) => {
     next();
 };
 
-// FIXED EMAIL CONFIGURATION
+// UPDATED EMAIL CONFIGURATION
 const emailTransporter = nodemailer.createTransport({
     service: 'gmail',
+    // Force IPv4 to prevent ENETUNREACH errors on restricted cloud environments
+    family: 4, 
     auth: {
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASS
