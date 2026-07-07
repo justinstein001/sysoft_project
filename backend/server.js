@@ -186,6 +186,23 @@ app.post('/api/checkout', async (req, res) => {
 });
 
 // ... [Rest of your code remains unchanged]
+// Add this block to your backend index.js
+app.post('/api/admin/login', (req, res) => {
+    const { username, password } = req.body;
+    
+    // Replace these with your actual secure credentials
+    // Note: Do not hardcode these in production! Use environment variables.
+    const ADMIN_USER = process.env.ADMIN_USERNAME;
+    const ADMIN_PASS = process.env.ADMIN_PASSWORD;
+
+    if (username === ADMIN_USER && password === ADMIN_PASS) {
+        const token = crypto.randomBytes(32).toString('hex');
+        activeAdminTokens.add(token);
+        res.json({ success: true, token: token });
+    } else {
+        res.status(401).json({ success: false, message: "Invalid credentials" });
+    }
+});
 // GET Admin Orders (Secured)
 
 app.get('/api/admin/orders', verifyAdminSession, async (req, res) => {
