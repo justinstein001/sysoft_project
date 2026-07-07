@@ -8,6 +8,7 @@ const fs = require('fs');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
 const axios = require('axios'); 
+const { Resend } = require('resend');
 
 const app = express();
 app.use(cors());
@@ -82,18 +83,19 @@ const emailTransporter = nodemailer.createTransport({
 });
 
 // Install resend first: npm install resend
-const { Resend } = require('resend');
+
+
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function sendNotificationEmail(recipient, subject, htmlContent) {
     try {
         await resend.emails.send({
-            from: 'SYSOFT <amahorojustin04@gmail.com>', // You will verify your own domain later
+            from: 'SYSOFT <amahorojustin04@gmail.com>',
             to: recipient,
             subject: subject,
             html: htmlContent
         });
-        console.log(`✅ Email successfully sent to ${recipient}`);
+        console.log(`✅ Email sent via Resend to ${recipient}`);
     } catch (error) {
         console.error(`❌ Email API failed:`, error.message);
     }
