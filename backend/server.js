@@ -1,13 +1,12 @@
 const express = require('express');
-const mysql = require('mysql2'); 
+const mysql = require('mysql2');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const nodemailer = require('nodemailer');
 const crypto = require('crypto');
-const axios = require('axios'); 
+const axios = require('axios');
 const { Resend } = require('resend');
 
 const app = express();
@@ -17,11 +16,12 @@ app.use(express.json());
 
 const GATEWAY_CLIENT_ID = process.env.PAYPACK_CLIENT_ID;
 const GATEWAY_CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET;
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
 const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)){
+if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }
 app.use('/uploads', express.static(uploadsDir));
@@ -36,7 +36,7 @@ const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME || 'defaultdb', 
+    database: process.env.DB_NAME || 'defaultdb',
     port: process.env.DB_PORT || 17499,
     waitForConnections: true,
     connectionLimit: 10,
@@ -44,16 +44,6 @@ const pool = mysql.createPool({
 });
 
 const db = pool.promise();
-
-pool.getConnection((err, connection) => {
-    if (err) {
-        console.error('❌ Database pool connection failure:', err.message);
-    } else {
-        console.log('✅ Connected to MySQL Database Pool successfully.');
-        connection.release();
-    }
-});
-
 const activeAdminTokens = new Set();
 
 const verifyAdminSession = (req, res, next) => {
@@ -68,345 +58,139 @@ const verifyAdminSession = (req, res, next) => {
     next();
 };
 
-// UPDATED EMAIL CONFIGURATION
-const emailTransporter = nodemailer.createTransport({
-    service: 'gmail',
-    // Force IPv4 to prevent ENETUNREACH errors on restricted cloud environments
-    family: 4, 
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS
-    },
-    tls: {
-        rejectUnauthorized: false
-    }
-});
-
-// Install resend first: npm install resend
-
-
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 async function sendNotificationEmail(recipient, subject, htmlContent) {
     try {
         await resend.emails.send({
-            from: 'SYSOFT <amahorojustin04@gmail.com>',
+            from: 'SYSOFT <onboarding@resend.dev>',
             to: recipient,
             subject: subject,
             html: htmlContent
         });
-        console.log(`✅ Email sent via Resend to ${recipient}`);
+        console.log(`✅ Email sent to ${recipient}`);
     } catch (error) {
         console.error(`❌ Email API failed:`, error.message);
     }
 }
 
-// ==========================================
-// 💳 LIVE PAYMENT INTEGRATION ENDPOINT
-// ==========================================
 app.post('/api/initiate-payment', async (req, res) => {
     try {
         let { phone, amount } = req.body;
-
-        if (!phone || !amount) {
-            return res.status(400).json({ success: false, message: "Phone and Amount fields are mandatory." });
-        }
-
-        if (!GATEWAY_CLIENT_ID || !GATEWAY_CLIENT_SECRET) {
-            console.error("[CRITICAL ERROR]: Paypack Environment Variables are missing on the host server panel.");
-            return res.status(500).json({ success: false, message: "Server environment configuration error. Missing API Keys." });
-        }
-
         let cleanPhone = phone.trim().replace(/[\s-+]/g, '');
-        if (cleanPhone.startsWith('0')) {
-            cleanPhone = '250' + cleanPhone.substring(1);
-        }
-        if (!cleanPhone.startsWith('250') || cleanPhone.length !== 12) {
-            return res.status(400).json({ success: false, message: "Invalid Rwanda number format. Use 078/079/072/073..." });
-        }
-
-        console.log(`[PAYMENT] Triggering MoMo/Airtel prompt for ${amount} RWF to device: ${cleanPhone}`);
+        if (cleanPhone.startsWith('0')) cleanPhone = '250' + cleanPhone.substring(1);
 
         const authResponse = await axios.post('https://payments.paypack.rw/api/auth/agents/authorize', {
             client_id: GATEWAY_CLIENT_ID,
             client_secret: GATEWAY_CLIENT_SECRET
         });
-        
-        const accessToken = authResponse.data.access;
 
         const pushResponse = await axios.post('https://payments.paypack.rw/api/transactions/cashin', {
             amount: Number(amount),
             number: cleanPhone
-        }, {
-            headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json'
-            }
-        });
+        }, { headers: { 'Authorization': `Bearer ${authResponse.data.access}` } });
 
-        if (pushResponse.data && pushResponse.data.ref) {
-            return res.status(200).json({
-                success: true,
-                message: "STK PIN Prompt issued successfully.",
-                txRef: pushResponse.data.ref 
-            });
-        } else {
-            throw new Error("Invalid provider response payload format.");
-        }
-
+        res.status(200).json({ success: true, txRef: pushResponse.data.ref });
     } catch (error) {
-        console.error("[GATEWAY FAULT]", error.response ? error.response.data : error.message);
-        return res.status(500).json({
-            success: false,
-            message: "Failed to transmit payment payload to phone network.",
-            error: error.response ? error.response.data : error.message
-        });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// GET all products
 app.get('/api/products', async (req, res) => {
     const search = req.query.search || '';
-    const sql = "SELECT * FROM products WHERE name LIKE ? OR description LIKE ?";
-    try {
-        const [results] = await db.query(sql, [`%${search}%`, `%${search}%`]);
-        res.json(results || []); 
-    } catch (err) {
-        res.status(500).json({ error: err.message || err || "Unknown database error" });
-    }
+    const [results] = await db.query("SELECT * FROM products WHERE name LIKE ? OR description LIKE ?", [`%${search}%`, `%${search}%`]);
+    res.json(results || []);
 });
 
-// POST new product (Secured)
 app.post('/api/admin/products', verifyAdminSession, upload.single('productImage'), async (req, res) => {
     const { name, price, stock_quantity, description } = req.body;
     const imageUrl = req.file ? `/uploads/${req.file.filename}` : '';
-    
-    const sql = "INSERT INTO products (name, price, stock_quantity, description, image_url) VALUES (?, ?, ?, ?, ?)";
-    try {
-        const [result] = await db.query(sql, [name, price, stock_quantity || 0, description, imageUrl]);
-        res.json({ success: true, productId: result.insertId });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    const [result] = await db.query("INSERT INTO products (name, price, stock_quantity, description, image_url) VALUES (?, ?, ?, ?, ?)", [name, price, stock_quantity || 0, description, imageUrl]);
+    res.json({ success: true, productId: result.insertId });
 });
 
-// PUT (Update) an existing product (Secured)
 app.put('/api/admin/products/:id', verifyAdminSession, upload.single('productImage'), async (req, res) => {
     const { name, price, stock_quantity, description } = req.body;
     const productId = req.params.id;
-    
-    try {
-        if (req.file) {
-            const imageUrl = `/uploads/${req.file.filename}`;
-            const sql = "UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ?, image_url = ? WHERE id = ?";
-            await db.query(sql, [name, price, stock_quantity || 0, description, imageUrl, productId]);
-            res.json({ success: true, message: "Product and image updated successfully!" });
-        } else {
-            const sql = "UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ? WHERE id = ?";
-            await db.query(sql, [name, price, stock_quantity || 0, description, productId]);
-            res.json({ success: true, message: "Product updated successfully!" });
-        }
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    if (req.file) {
+        await db.query("UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ?, image_url = ? WHERE id = ?", [name, price, stock_quantity || 0, description, `/uploads/${req.file.filename}`, productId]);
+    } else {
+        await db.query("UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ? WHERE id = ?", [name, price, stock_quantity || 0, description, productId]);
     }
+    res.json({ success: true });
 });
 
-// DELETE a product from the inventory (Secured)
 app.delete('/api/admin/products/:id', verifyAdminSession, async (req, res) => {
-    const productId = req.params.id;
-    const sql = "DELETE FROM products WHERE id = ?";
-    try {
-        await db.query(sql, [productId]);
-        res.json({ success: true, message: "Product removed from inventory!" });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    await db.query("DELETE FROM products WHERE id = ?", [req.params.id]);
+    res.json({ success: true });
 });
 
-// Admin Authentication Gateway
 app.post('/api/admin/login', async (req, res) => {
     const { username, password } = req.body;
     const hashedPassword = crypto.createHash('md5').update(password).digest('hex');
-
-    const query = 'SELECT * FROM admins WHERE username = ? AND password = ?';
-    try {
-        const [results] = await db.query(query, [username, hashedPassword]);
-        if (results.length > 0) {
-            const tempToken = crypto.randomBytes(16).toString('hex');
-            activeAdminTokens.add(tempToken);
-            res.json({ success: true, token: tempToken });
-        } else {
-            res.json({ success: false, message: 'Invalid credentials provided!' });
-        }
-    } catch (err) {
-        res.status(500).json({ success: false, message: 'Database error' });
+    const [results] = await db.query('SELECT * FROM admins WHERE username = ? AND password = ?', [username, hashedPassword]);
+    if (results.length > 0) {
+        const tempToken = crypto.randomBytes(16).toString('hex');
+        activeAdminTokens.add(tempToken);
+        res.json({ success: true, token: tempToken });
+    } else {
+        res.json({ success: false, message: 'Invalid credentials' });
     }
 });
 
-// Checkout Route handling Stock Deduction, Tracking & Dynamic Email Render Tables
 app.post('/api/checkout', async (req, res) => {
     const { fullName, email, phone, district, deliveryAddress, txRef, totalAmount, items } = req.body;
-    
-    const productsSummary = Array.isArray(items) 
-        ? items.map(item => `${item.name} (x${item.quantity})`).join(', ')
-        : 'N/A';
+    const productsSummary = items.map(item => `${item.name} (x${item.quantity})`).join(', ');
 
-    const sql = "INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)";
-    
-    try {
-        const [result] = await db.query(sql, [fullName, email, phone, district, deliveryAddress || 'Not Provided', totalAmount, txRef, productsSummary]);
-        const orderId = result.insertId;
+    const [result] = await db.query("INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)", [fullName, email, phone, district, deliveryAddress || 'Not Provided', totalAmount, txRef, productsSummary]);
+    const orderId = result.insertId;
 
-        if (Array.isArray(items)) {
-            for (const item of items) {
-                const updateStockSql = "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?";
-                try {
-                    await db.query(updateStockSql, [item.quantity, item.id]);
-                } catch (stockErr) {
-                    console.error(`❌ Stock deduction failed for item ID ${item.id}:`, stockErr.message);
-                }
-            }
-        }
-
-        let itemsHtmlRows = '';
-        if (Array.isArray(items)) {
-            itemsHtmlRows = items.map(item => `
-                <tr>
-                    <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
-                    <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
-                    <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">${parseInt(item.price * item.quantity).toLocaleString()} RWF</td>
-                </tr>
-            `).join('');
-        } else {
-            itemsHtmlRows = `<tr><td colspan="3" style="padding: 8px; text-align: center;">No structured item elements detected.</td></tr>`;
-        }
-
-        const customerHtml = `
-            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e0e0e0; padding: 25px; border-radius: 8px;">
-                <div style="text-align: center; border-bottom: 3px solid #2ecc71; padding-bottom: 15px;">
-                    <h1 style="color: #2ecc71; margin: 0; font-size: 24px;">Thank You for Your Purchase!</h1>
-                </div>
-                <p style="font-size: 16px;">Dear <strong>${fullName}</strong>,</p>
-                <p>We truly appreciate your business and are thrilled that you choose to shop with us today!</p>
-                <div style="background-color: #f9f9f9; border-left: 4px solid #2ecc71; padding: 15px; margin: 20px 0;">
-                    <h3 style="margin-top: 0; color: #2c3e50;">Order Summary (#00${orderId}):</h3>
-                    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px; font-size: 14px;">
-                        <thead>
-                            <tr style="background-color: #eee;">
-                                <th style="padding: 8px; text-align: left;">Product Item</th>
-                                <th style="padding: 8px; text-align: center;">Qty</th>
-                                <th style="padding: 8px; text-align: right;">Price</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${itemsHtmlRows}
-                        </tbody>
-                    </table>
-                    <p style="margin: 5px 0;"><strong>Total Items Amount:</strong> <span style="color: #2ecc71; font-weight: bold;">${parseInt(totalAmount).toLocaleString()} RWF</span></p>
-                    <p style="margin: 5px 0;"><strong>Shipping Zone Specified:</strong> ${district}, ${deliveryAddress || ''}</p>
-                </div>
-                <p style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;">Warm regards,<br><strong>The SYSOFT Shop Team</strong></p>
-            </div>
-        `;
-
-        const adminHtml = `
-            <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ccc; padding: 25px; border-radius: 8px;">
-                <div style="background-color: #2c3e50; padding: 15px; text-align: center; border-radius: 6px 6px 0 0;">
-                    <h2 style="color: #ffffff; margin: 0; font-size: 20px;">🚨 New Store Order #00${orderId}</h2>
-                </div>
-                <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9; width: 35%;">Client Name:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">${fullName}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Location Address:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">${district}, ${deliveryAddress || ''}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Products Sold:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd;">${productsSummary}</td>
-                    </tr>
-                    <tr>
-                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Total Price Paid:</td>
-                        <td style="padding: 10px; border: 1px solid #ddd; color: #27ae60; font-weight: bold;">${parseInt(totalAmount).toLocaleString()} RWF</td>
-                    </tr>
-                </table>
-            </div>
-        `;
-
-        sendNotificationEmail(email, "SYSOFT Order Confirmation", customerHtml);
-        sendNotificationEmail("amahorojustin04@gmail.com", "🚨 New Order Dispatch", adminHtml);
-
-        res.json({ success: true, orderId: orderId });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    for (const item of items) {
+        await db.query("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?", [item.quantity, item.id]);
     }
+
+    const itemsHtmlRows = items.map(item => `
+        <tr>
+            <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
+            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
+            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">${parseInt(item.price * item.quantity).toLocaleString()} RWF</td>
+        </tr>`).join('');
+
+    const customerHtml = `
+        <div style="font-family: sans-serif; line-height: 1.6; max-width: 600px; border: 1px solid #e0e0e0; padding: 25px; border-radius: 8px;">
+            <h1 style="color: #2ecc71;">Thank You, ${fullName}!</h1>
+            <p>Order Summary (#00${orderId}):</p>
+            <table style="width: 100%; border-collapse: collapse;">
+                ${itemsHtmlRows}
+            </table>
+            <p><strong>Total: ${parseInt(totalAmount).toLocaleString()} RWF</strong></p>
+        </div>`;
+
+    const adminHtml = `
+        <div style="font-family: sans-serif; padding: 25px; border: 1px solid #ccc;">
+            <h2>🚨 New Order #00${orderId}</h2>
+            <p>Client: ${fullName}</p>
+            <p>Items: ${productsSummary}</p>
+            <p>Total: ${parseInt(totalAmount).toLocaleString()} RWF</p>
+        </div>`;
+
+    sendNotificationEmail(email, "SYSOFT Order Confirmation", customerHtml);
+    sendNotificationEmail("amahorojustin04@gmail.com", "🚨 New Order Dispatch", adminHtml);
+
+    res.json({ success: true, orderId: orderId });
 });
 
-// GET Admin Orders (Secured)
 app.get('/api/admin/orders', verifyAdminSession, async (req, res) => {
-    const sql = "SELECT * FROM orders ORDER BY id DESC";
-    try {
-        const [results] = await db.query(sql);
-        res.json(results);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    const [results] = await db.query("SELECT * FROM orders ORDER BY id DESC");
+    res.json(results);
 });
 
-// PATCH Order Status (Secured)
 app.patch('/api/admin/orders/:id/status', verifyAdminSession, async (req, res) => {
-    const { payment_status } = req.body;
-    const orderId = req.params.id;
-    const sql = "UPDATE orders SET payment_status = ? WHERE id = ?";
-    
-    try {
-        await db.query(sql, [payment_status, orderId]);
-        
-        if(payment_status === 'COMPLETED') {
-            try {
-                const [orderRecord] = await db.query("SELECT email, full_name, district, delivery_address FROM orders WHERE id = ?", [orderId]);
-                if (orderRecord && orderRecord.length > 0) {
-                    const targetClient = orderRecord[0];
-                    const approvedHtml = `
-                        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 550px; border: 1px solid #e2e8f0; border-radius: 10px;">
-                            <h2 style="color: #10b981;">Order Approved & Shipped!</h2>
-                            <p>Hello <b>${targetClient.full_name}</b>,</p>
-                            <p>Great news! Your package for Order <b>#00${orderId}</b> has been approved and has been assigned to our logistics dispatch rider team.</p>
-                            <p>📍 <b>Delivery Zone:</b> ${targetClient.district}, ${targetClient.delivery_address || ''}</p>
-                            <p>Thank you for choosing SYSOFT!</p>
-                        </div>`;
-                    sendNotificationEmail(targetClient.email, `📦 SYSOFT Order #00${orderId} Dispatched!`, approvedHtml);
-                }
-            } catch (err) {
-                console.error("Failed to process approval notification pipeline.");
-            }
-        }
-        
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    await db.query("UPDATE orders SET payment_status = ? WHERE id = ?", [req.body.payment_status, req.params.id]);
+    res.json({ success: true });
 });
 
-// DELETE an order (Secured)
-app.delete('/api/admin/orders/:id', verifyAdminSession, async (req, res) => {
-    const sql = "DELETE FROM orders WHERE id = ?";
-    try {
-        await db.query(sql, [req.params.id]);
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Express 5 compatible regex route to handle the single page application fallback
 app.get(/.*/, (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
