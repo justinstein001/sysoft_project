@@ -81,16 +81,21 @@ const emailTransporter = nodemailer.createTransport({
     }
 });
 
+// Install resend first: npm install resend
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 async function sendNotificationEmail(recipient, subject, htmlContent) {
     try {
-        await emailTransporter.sendMail({
-            from: `"SYSOFT Smart Shop" <${process.env.EMAIL_USER}>`,
+        await resend.emails.send({
+            from: 'SYSOFT <amahorojustin04@gmail.com>', // You will verify your own domain later
             to: recipient,
             subject: subject,
             html: htmlContent
         });
+        console.log(`✅ Email successfully sent to ${recipient}`);
     } catch (error) {
-        console.error(`❌ Email failed to direct to ${recipient}:`, error.message);
+        console.error(`❌ Email API failed:`, error.message);
     }
 }
 
