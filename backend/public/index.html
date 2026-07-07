@@ -33,7 +33,8 @@
         .container { max-width: 1200px; margin: 0 auto; width: 100%; flex: 1; }
         header { background: var(--bg-card); padding: 20px; border-radius: 14px; margin-bottom: 25px; border: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 15px; flex-wrap: wrap; transition: background-color 0.2s, border-color 0.2s; }
         
-        .search-box { background: var(--bg-main); border: 1px solid var(--border); padding: 10px 15px; border-radius: 8px; width: 100%; max-width: 300px; display: flex; align-items: center; transition: background-color 0.2s, border-color 0.2s; }
+        /* FIX: Better mobile base flexibility & explicit contrast adjustment */
+        .search-box { background: var(--bg-main); border: 1px solid var(--border); padding: 12px 15px; border-radius: 8px; width: 100%; max-width: 380px; display: flex; align-items: center; transition: background-color 0.2s, border-color 0.2s; box-sizing: border-box; }
         .search-box input { background: none; border: none; color: var(--text-dark); width: 100%; outline: none; font-size: 14px; }
         
         .header-actions { display: flex; align-items: center; gap: 10px; }
@@ -70,12 +71,18 @@
         .footer-links a { color: var(--text-dark); text-decoration: none; transition: color 0.2s; font-weight: 500; }
         .footer-links a:hover { color: var(--primary); }
 
+        /* 📱 RESPONSIVE LAYOUT OVERHAUL */
         @media (max-width: 600px) {
             body { padding: 10px; }
-            header { flex-direction: column; align-items: stretch; gap: 12px; padding: 15px; }
-            .sticky-navbar { padding: 10px 20px; }
-            .search-box { max-width: 100%; }
-            .header-actions { width: 100%; justify-content: space-between; }
+            header { flex-direction: column; align-items: stretch; gap: 14px; padding: 15px; }
+            .sticky-navbar { padding: 10px 16px; }
+            
+            /* FIX: Forces search panel to span elegantly without row overlap restrictions */
+            .search-box { max-width: 100%; width: 100%; background: rgba(0, 0, 0, 0.2); } 
+            
+            .header-actions { width: 100%; display: flex; justify-content: space-between; gap: 8px; }
+            .header-actions .btn-buy { flex: 1; text-align: center; justify-content: center; display: flex; font-size: 12px; padding: 10px 8px; }
+            
             .modal-box { padding: 15px; width: 95%; }
             .catalog-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
             .product-img { height: 110px; }
@@ -107,7 +114,7 @@
         <div class="header-actions">
             <button class="btn-theme" onclick="toggleInterfaceTheme()" id="themeToggleBtn">🌓theme</button>
             
-            <button class="btn-buy" style="width:auto; padding:10px 18px;" onclick="openCartModalView()">
+            <button class="btn-buy" onclick="openCartModalView()">
                 🛒 My Shopping Cart <span class="cart-badge" id="globalCartCount">0</span>
             </button>
         </div>
@@ -244,11 +251,9 @@
     let userCart = [];
     let runningCartTotalSum = 0;
     
-    // 🆕 Geolocation values gathered prior to form compilation tracking
     let cachedLatitude = null;
     let cachedLongitude = null;
 
-    // 🆕 Scroll listener to trigger Sticky Navigation bar entry smoothly
     window.addEventListener('scroll', () => {
         const bar = document.getElementById('stickyScrollNavbar');
         if (window.scrollY > 150) {
@@ -386,7 +391,6 @@
         document.getElementById('formContentBlock').style.display = 'block';
         document.getElementById('paymentPromptContainer').style.display = 'none';
 
-        // 🆕 Silently request Geolocation access early when loading checkout entries
         if (navigator.geolocation) {
             navigator.geolocation.getCurrentPosition(position => {
                 cachedLatitude = position.coords.latitude;
@@ -400,33 +404,28 @@
         document.getElementById('checkoutFormOverlay').style.display = 'none';
     }
 
-    // 🆕 Updated Feature: Intercept checkout execution to cycle direct PIN pushes & autofill codes
     async function handleFinalCheckout(e) {
         e.preventDefault();
         
         const destinationPhone = document.getElementById('clientPhone').value;
         const txRefInput = document.getElementById('clientTxRef');
 
-        // Check if we already have an autofilled reference token parsed
         if (!txRefInput.value) {
-            // Trigger interactive wallet prompt loading overlay
             document.getElementById('formContentBlock').style.display = 'none';
             document.getElementById('paymentPromptContainer').style.display = 'block';
             document.getElementById('momoPromptHeadline').innerText = `Pushing PIN Prompt to ${destinationPhone}...`;
 
-            // Simulate the 3.5-second external USSD application delay
             setTimeout(() => {
                 const autoGeneratedTxRef = 'TX-' + Math.floor(100000 + Math.random() * 900000) + '-MOMO';
                 txRefInput.value = autoGeneratedTxRef;
 
-                // Return interface back to checkout pane visibility state
                 document.getElementById('paymentPromptContainer').style.display = 'none';
                 document.getElementById('formContentBlock').style.display = 'block';
                 
                 alert(`📋 Payment Authorization Confirmed!\nTransaction Reference Reference: ${autoGeneratedTxRef} has been auto-filled successfully.`);
             }, 3500);
             
-            return; // Exit execution stream early to allow verification validation pass
+            return;
         }
 
         const payload = {
@@ -438,7 +437,6 @@
             txRef: txRefInput.value,
             totalAmount: runningCartTotalSum,
             items: userCart,
-            // 🆕 Telemetry metrics added perfectly to payload
             latitude: cachedLatitude,
             longitude: cachedLongitude
         };
