@@ -7,11 +7,16 @@ const path = require('path');
 const fs = require('fs');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const axios = require('axios'); // Added for handling API calls to the payment gateway
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
+
+// ⚠️ Gateway Credentials (Set these securely in your Render dashboard environment variables)
+const GATEWAY_CLIENT_ID = process.env.PAYPACK_CLIENT_ID || "0c8b334a-79a1-11f1-a32b-deadd43720af";
+const GATEWAY_CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET || "9c5dd80934388233c9a7d75daa2fc46cda39a3ee5e6b4b0d3255bfef95601890afd80709";
 
 // Serve frontend assets automatically out of a folder named 'public'
 app.use(express.static(path.join(__dirname, 'public')));
@@ -91,6 +96,68 @@ async function sendNotificationEmail(recipient, subject, htmlContent) {
         console.error(`❌ Email failed to direct to ${recipient}:`, error.message);
     }
 }
+
+// ==========================================
+// 💳 LIVE PAYMENT INTEGRATION ENDPOINT
+// ==========================================
+app.post('/api/initiate-payment', async (req, res) => {
+    try {
+        let { phone, amount } = req.body;
+
+        if (!phone || !amount) {
+            return res.status(400).json({ success: false, message: "Phone and Amount fields are mandatory." });
+        }
+
+        // 🔄 Clean up and format phone to standard Rwanda format (e.g., 078... -> 25078...)
+        let cleanPhone = phone.trim().replace(/[\s-+]/g, '');
+        if (cleanPhone.startsWith('0')) {
+            cleanPhone = '250' + cleanPhone.substring(1);
+        }
+        if (!cleanPhone.startsWith('250') || cleanPhone.length !== 12) {
+            return res.status(400).json({ success: false, message: "Invalid Rwanda number format. Use 078/079/072/073..." });
+        }
+
+        console.log(`[PAYMENT] Triggering MoMo/Airtel prompt for ${amount} RWF to device: ${cleanPhone}`);
+
+        // 1. Fetch Auth Token from the aggregator platform (e.g., Paypack API format)
+        const authResponse = await axios.post('https://payments.paypack.rw/api/auth/agents/authorize', {
+            client_id: GATEWAY_CLIENT_ID,
+            client_secret: GATEWAY_CLIENT_SECRET
+        });
+        
+        const accessToken = authResponse.data.access;
+
+        // 2. Dispatch Direct USSD Mobile Money Prompt (Cash-in) to user's phone
+        const pushResponse = await axios.post('https://payments.paypack.rw/api/transactions/cashin', {
+            amount: Number(amount),
+            number: cleanPhone
+        }, {
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        // 3. Return the real tracking reference back to your frontend checkout form
+        if (pushResponse.data && pushResponse.data.ref) {
+            return res.status(200).json({
+                success: true,
+                message: "STK PIN Prompt issued successfully.",
+                txRef: pushResponse.data.ref 
+            });
+        } else {
+            throw new Error("Invalid provider response payload format.");
+        }
+
+    } catch (error) {
+        console.error("[GATEWAY FAULT]", error.response ? error.response.data : error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Failed to transmit payment payload to phone network.",
+            error: error.response ? error.response.data : error.message
+        });
+    }
+});
 
 // GET all products
 app.get('/api/products', async (req, res) => {
@@ -179,7 +246,6 @@ app.post('/api/checkout', async (req, res) => {
         ? items.map(item => `${item.name} (x${item.quantity})`).join(', ')
         : 'N/A';
 
-    // FIX: Included delivery_address column explicitly into the layout schema database entry parameters map 
     const sql = "INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)";
     
     try {
