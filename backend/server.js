@@ -93,17 +93,13 @@ async function sendNotificationEmail(recipient, subject, htmlContent) {
 }
 
 // GET all products
-// Look at your GET /api/products route:
 app.get('/api/products', async (req, res) => {
     const search = req.query.search || '';
     const sql = "SELECT * FROM products WHERE name LIKE ? OR description LIKE ?";
     try {
         const [results] = await db.query(sql, [`%${search}%`, `%${search}%`]);
-        
-        // If results is empty or undefined, let's make sure it returns a clean array instead of throwing
         res.json(results || []); 
     } catch (err) {
-        // If err.message doesn't exist, fallback to the error object itself so it's never empty
         res.status(500).json({ error: err.message || err || "Unknown database error" });
     }
 });
@@ -183,10 +179,11 @@ app.post('/api/checkout', async (req, res) => {
         ? items.map(item => `${item.name} (x${item.quantity})`).join(', ')
         : 'N/A';
 
-    const sql = "INSERT INTO orders (full_name, email, phone, district, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)";
+    // FIX: Included delivery_address column explicitly into the layout schema database entry parameters map 
+    const sql = "INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)";
     
     try {
-        const [result] = await db.query(sql, [fullName, email, phone, district, totalAmount, txRef, productsSummary]);
+        const [result] = await db.query(sql, [fullName, email, phone, district, deliveryAddress || 'Not Provided', totalAmount, txRef, productsSummary]);
         const orderId = result.insertId;
 
         // Deduct quantities from remaining inventory stock securely
@@ -237,7 +234,7 @@ app.post('/api/checkout', async (req, res) => {
                         </tbody>
                     </table>
                     <p style="margin: 5px 0;"><strong>Total Items Amount:</strong> <span style="color: #2ecc71; font-weight: bold;">${parseInt(totalAmount).toLocaleString()} RWF</span></p>
-                    <p style="margin: 5px 0;"><strong>Shipping Zone Specified:</strong> ${district}</p>
+                    <p style="margin: 5px 0;"><strong>Shipping Zone Specified:</strong> ${district}, ${deliveryAddress || ''}</p>
                 </div>
                 <p style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 15px;">Warm regards,<br><strong>The SYSOFT Shop Team</strong></p>
             </div>
@@ -253,6 +250,10 @@ app.post('/api/checkout', async (req, res) => {
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9; width: 35%;">Client Name:</td>
                         <td style="padding: 10px; border: 1px solid #ddd;">${fullName}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Location Address:</td>
+                        <td style="padding: 10px; border: 1px solid #ddd;">${district}, ${deliveryAddress || ''}</td>
                     </tr>
                     <tr>
                         <td style="padding: 10px; border: 1px solid #ddd; font-weight: bold; background-color: #f9f9f9;">Products Sold:</td>
@@ -289,9 +290,33 @@ app.get('/api/admin/orders', verifyAdminSession, async (req, res) => {
 // PATCH Order Status (Secured)
 app.patch('/api/admin/orders/:id/status', verifyAdminSession, async (req, res) => {
     const { payment_status } = req.body;
+    const orderId = req.params.id;
     const sql = "UPDATE orders SET payment_status = ? WHERE id = ?";
+    
     try {
-        await db.query(sql, [payment_status, req.params.id]);
+        await db.query(sql, [payment_status, orderId]);
+        
+        // Dynamic Customer Trigger Alert notification sent automatically if order is approved
+        if(payment_status === 'COMPLETED') {
+            try {
+                const [orderRecord] = await db.query("SELECT email, full_name, district, delivery_address FROM orders WHERE id = ?", [orderId]);
+                if (orderRecord && orderRecord.length > 0) {
+                    const targetClient = orderRecord[0];
+                    const approvedHtml = `
+                        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 550px; border: 1px solid #e2e8f0; border-radius: 10px;">
+                            <h2 style="color: #10b981;">Order Approved & Shipped!</h2>
+                            <p>Hello <b>${targetClient.full_name}</b>,</p>
+                            <p>Great news! Your package for Order <b>#00${orderId}</b> has been approved and has been assigned to our logistics dispatch rider team.</p>
+                            <p>📍 <b>Delivery Zone:</b> ${targetClient.district}, ${targetClient.delivery_address || ''}</p>
+                            <p>Thank you for choosing SYSOFT!</p>
+                        </div>`;
+                    sendNotificationEmail(targetClient.email, `📦 SYSOFT Order #00${orderId} Dispatched!`, approvedHtml);
+                }
+            } catch (err) {
+                console.error("Failed to process approval notification pipeline.");
+            }
+        }
+        
         res.json({ success: true });
     } catch (err) {
         res.status(500).json({ error: err.message });
