@@ -186,3 +186,137 @@ app.post('/api/checkout', async (req, res) => {
 });
 
 // ... [Rest of your code remains unchanged]
+// GET Admin Orders (Secured)
+
+app.get('/api/admin/orders', verifyAdminSession, async (req, res) => {
+
+    const sql = "SELECT * FROM orders ORDER BY id DESC";
+
+    try {
+
+        const [results] = await db.query(sql);
+
+        res.json(results);
+
+    } catch (err) {
+
+        res.status(500).json({ error: err.message });
+
+    }
+
+});
+
+
+
+// PATCH Order Status (Secured)
+
+app.patch('/api/admin/orders/:id/status', verifyAdminSession, async (req, res) => {
+
+    const { payment_status } = req.body;
+
+    const orderId = req.params.id;
+
+    const sql = "UPDATE orders SET payment_status = ? WHERE id = ?";
+
+   
+
+    try {
+
+        await db.query(sql, [payment_status, orderId]);
+
+       
+
+        // Dynamic Customer Trigger Alert notification sent automatically if order is approved
+
+        if(payment_status === 'COMPLETED') {
+
+            try {
+
+                const [orderRecord] = await db.query("SELECT email, full_name, district, delivery_address FROM orders WHERE id = ?", [orderId]);
+
+                if (orderRecord && orderRecord.length > 0) {
+
+                    const targetClient = orderRecord[0];
+
+                    const approvedHtml = `
+
+                        <div style="font-family: Arial, sans-serif; padding: 20px; max-width: 550px; border: 1px solid #e2e8f0; border-radius: 10px;">
+
+                            <h2 style="color: #10b981;">Order Approved & Shipped!</h2>
+
+                            <p>Hello <b>${targetClient.full_name}</b>,</p>
+
+                            <p>Great news! Your package for Order <b>#00${orderId}</b> has been approved and has been assigned to our logistics dispatch rider team.</p>
+
+                            <p>📍 <b>Delivery Zone:</b> ${targetClient.district}, ${targetClient.delivery_address || ''}</p>
+
+                            <p>Thank you for choosing SYSOFT!</p>
+
+                        </div>`;
+
+                    sendNotificationEmail(targetClient.email, `📦 SYSOFT Order #00${orderId} Dispatched!`, approvedHtml);
+
+                }
+
+            } catch (err) {
+
+                console.error("Failed to process approval notification pipeline.");
+
+            }
+
+        }
+
+       
+
+        res.json({ success: true });
+
+    } catch (err) {
+
+        res.status(500).json({ error: err.message });
+
+    }
+
+});
+
+
+
+// DELETE an order (Secured)
+
+app.delete('/api/admin/orders/:id', verifyAdminSession, async (req, res) => {
+
+    const sql = "DELETE FROM orders WHERE id = ?";
+
+    try {
+
+        await db.query(sql, [req.params.id]);
+
+        res.json({ success: true });
+
+    } catch (err) {
+
+        res.status(500).json({ error: err.message });
+
+    }
+
+});
+
+
+
+// Express 5 compatible regex route to handle the single page application fallback
+
+app.get(/.*/, (req, res) => {
+
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+
+});
+
+
+
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+
+    console.log(`Server is running on port ${PORT}`);
+
+}); 
+
