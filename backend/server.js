@@ -14,9 +14,9 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
 
-// ⚠️ Gateway Credentials (Set these securely in your Render dashboard environment variables)
-const GATEWAY_CLIENT_ID = process.env.PAYPACK_CLIENT_ID || "0c8b334a-79a1-11f1-a32b-deadd43720af";
-const GATEWAY_CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET || "9c5dd80934388233c9a7d75daa2fc46cda39a3ee5e6b4b0d3255bfef95601890afd80709";
+// ⚠️ Gateway Credentials (Secured completely via Render dashboard environment variables)
+const GATEWAY_CLIENT_ID = process.env.PAYPACK_CLIENT_ID;
+const GATEWAY_CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET;
 
 // Serve frontend assets automatically out of a folder named 'public'
 app.use(express.static(path.join(__dirname, 'public')));
@@ -106,6 +106,12 @@ app.post('/api/initiate-payment', async (req, res) => {
 
         if (!phone || !amount) {
             return res.status(400).json({ success: false, message: "Phone and Amount fields are mandatory." });
+        }
+
+        // Check if environment variables are correctly loaded on Render server instance
+        if (!GATEWAY_CLIENT_ID || !GATEWAY_CLIENT_SECRET) {
+            console.error("[CRITICAL ERROR]: Paypack Environment Variables are missing on the host server panel.");
+            return res.status(500).json({ success: false, message: "Server environment configuration error. Missing API Keys." });
         }
 
         // 🔄 Clean up and format phone to standard Rwanda format (e.g., 078... -> 25078...)
