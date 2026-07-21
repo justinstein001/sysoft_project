@@ -125,6 +125,7 @@
     
     let dynamicSessionToken = localStorage.getItem('adminToken') || null;
     let activeEditingProductId = null;
+    let inventoryProductsById = new Map();
 
     // Check if token exists on load
     window.addEventListener('DOMContentLoaded', () => {
@@ -315,6 +316,9 @@
         try {
             const res = await fetch(`${API_BASE}/api/products`);
             const products = await res.json();
+            inventoryProductsById = new Map(
+                products.map(product => [String(product.id), product])
+            );
             directory.innerHTML = '';
             
             if(products.length === 0) {
@@ -334,12 +338,21 @@
                             </div>
                         </div>
                         <div style="display:flex;">
-                            <button class="btn-action btn-edit" onclick="setupProductFormForEdit(${JSON.stringify(p).replace(/"/g, '"')})">Edit</button>
+                            <button type="button" class="btn-action btn-edit" onclick="editProductById(${Number(p.id)})">Edit</button>
                             <button class="btn-action btn-delete" style="margin:0;" onclick="removeProductInstance(${p.id})">Delete</button>
                         </div>
                     </div>`;
             });
         } catch (err) { directory.innerHTML = '<p style="padding:15px; color:var(--danger);">Error loading directory matrix.</p>'; }
+    }
+
+    function editProductById(id) {
+        const product = inventoryProductsById.get(String(id));
+        if (!product) {
+            alert('Product data could not be found. Refresh the product list and try again.');
+            return;
+        }
+        setupProductFormForEdit(product);
     }
 
     function setupProductFormForEdit(product) {
