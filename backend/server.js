@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
-const { Resend } = require('resend');
+//const { Resend } = require('resend');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -60,7 +60,7 @@ const pool = mysql.createPool({
   ...(process.env.DB_SSL === 'true' ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 const db = pool.promise();
-const resend = new Resend(process.env.RESEND_API_KEY);
+//const resend = new Resend(process.env.RESEND_API_KEY);
 const activeAdminTokens = new Set();
 
 function verifyAdminSession(req, res, next) {
