@@ -1,196 +1,293 @@
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const axios = require('axios');
-//const { Resend } = require('resend');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-app.use(express.json());
+const PORT = Number(process.env.PORT || 5000);
+const isVercel = Boolean(process.env.VERCEL);
+const uploadsDir = path.join(__dirname, 'uploads');
+const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || '')
+  .split(',').map(value => value.trim()).filter(Boolean);
 
-const GATEWAY_CLIENT_ID = process.env.PAYPACK_CLIENT_ID;
-const GATEWAY_CLIENT_SECRET = process.env.PAYPACK_CLIENT_SECRET;
-//const resend = new Resend(process.env.RESEND_API_KEY);
+if (!process.env.JWT_SECRET) {
+  console.warn('WARNING: JWT_SECRET is not set. Admin logins will not work until it is configured.');
+}
 
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'DENY');
+  next();
+});
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('This website is not allowed to call the API.'));
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-const uploadsDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
+// Images must use Cloudinary in Vercel production. Local disk is only a local-development fallback.
+let cloudinary = null;
+if (process.env.CLOUDINARY_URL) {
+  cloudinary = require('cloudinary').v2;
+  cloudinary.config({ secure: true });
 }
-app.use('/uploads', express.static(uploadsDir));
+if (!isVercel) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  app.use('/uploads', express.static(uploadsDir));
+}
 
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => { cb(null, 'uploads/'); },
-    filename: (req, file, cb) => { cb(null, Date.now() + path.extname(file.originalname)); }
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const types = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (types.includes(file.mimetype)) return callback(null, true);
+    return callback(new Error('Use a JPEG, PNG, WebP, or GIF image.'));
+  },
 });
-const upload = multer({ storage: storage });
 
 const pool = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME || 'defaultdb',
-    port: process.env.DB_PORT || 17499,
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME || 'defaultdb',
+  port: Number(process.env.DB_PORT || 3306),
+  waitForConnections: true,
+  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
+  queueLimit: 0,
+  ...(process.env.DB_SSL === 'true' ? { ssl: { rejectUnauthorized: false } } : {}),
 });
-
 const db = pool.promise();
-const activeAdminTokens = new Set();
 
-const verifyAdminSession = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).json({ error: 'Access Denied: Missing session parameters.' });
-    }
-    const token = authHeader.split(' ')[1];
-    if (!activeAdminTokens.has(token)) {
-        return res.status(403).json({ error: 'Access Denied: Expired or unauthenticated credentials.' });
-    }
-    next();
-};
-
-async function sendNotificationEmail(recipient, subject, htmlContent) {
-    try {
-        await resend.emails.send({
-            from: 'SYSOFT <onboarding@resend.dev>',
-            to: recipient,
-            subject: subject,
-            html: htmlContent
-        });
-        console.log(`✅ Email sent to ${recipient}`);
-    } catch (error) {
-        console.error(`❌ Email API failed:`, error.message);
-    }
+function httpError(message, status = 400) {
+  return Object.assign(new Error(message), { status });
 }
 
-app.post('/api/initiate-payment', async (req, res) => {
-    try {
-        let { phone, amount } = req.body;
-        let cleanPhone = phone.trim().replace(/[\s-+]/g, '');
-        if (cleanPhone.startsWith('0')) cleanPhone = '250' + cleanPhone.substring(1);
+function cleanText(value, maxLength = 500) {
+  return String(value || '').trim().slice(0, maxLength);
+}
 
-        const authResponse = await axios.post('https://payments.paypack.rw/api/auth/agents/authorize', {
-            client_id: GATEWAY_CLIENT_ID,
-            client_secret: GATEWAY_CLIENT_SECRET
-        });
+function readAdminToken(req) {
+  return req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
+}
 
-        const pushResponse = await axios.post('https://payments.paypack.rw/api/transactions/cashin', {
-            amount: Number(amount),
-            number: cleanPhone
-        }, { headers: { 'Authorization': `Bearer ${authResponse.data.access}` } });
+function verifyAdminSession(req, res, next) {
+  const token = readAdminToken(req);
+  if (!token) return res.status(401).json({ success: false, error: 'Sign in is required.' });
+  try {
+    req.admin = jwt.verify(token, process.env.JWT_SECRET);
+    return next();
+  } catch {
+    return res.status(403).json({ success: false, error: 'Your admin session has expired. Please sign in again.' });
+  }
+}
 
-        res.status(200).json({ success: true, txRef: pushResponse.data.ref });
-    } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-    }
+function productValues(body) {
+  const name = cleanText(body.name, 150);
+  const description = cleanText(body.description, 2000);
+  const price = Number(body.price);
+  const stockQuantity = body.stock_quantity === '' || body.stock_quantity == null ? 0 : Number(body.stock_quantity);
+  if (!name) throw httpError('Product name is required.');
+  if (!Number.isFinite(price) || price < 0) throw httpError('Price must be a non-negative number.');
+  if (!Number.isInteger(stockQuantity) || stockQuantity < 0) throw httpError('Stock quantity must be a non-negative whole number.');
+  return { name, description, price, stockQuantity };
+}
+
+async function storeImage(file) {
+  if (!file) return '';
+  if (cloudinary) {
+    const result = await new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: process.env.CLOUDINARY_FOLDER || 'sysoft-products', resource_type: 'image' },
+        (error, result) => error ? reject(error) : resolve(result),
+      );
+      stream.end(file.buffer);
+    });
+    return result.secure_url;
+  }
+  if (isVercel) throw httpError('Image storage is not configured. Add CLOUDINARY_URL in Vercel.', 503);
+  const extension = path.extname(file.originalname).toLowerCase() || '.jpg';
+  const filename = `${crypto.randomUUID()}${extension}`;
+  await fs.promises.writeFile(path.join(uploadsDir, filename), file.buffer);
+  return `/uploads/${filename}`;
+}
+
+function publicImageUrl(imageUrl) {
+  return imageUrl || '';
+}
+
+app.get('/api/health', async (_req, res, next) => {
+  try {
+    await db.query('SELECT 1');
+    res.json({ success: true, service: 'sysoft-api', time: new Date().toISOString() });
+  } catch (error) { next(error); }
 });
 
-app.get('/api/products', async (req, res) => {
-    const search = req.query.search || '';
-    const [results] = await db.query("SELECT * FROM products WHERE name LIKE ? OR description LIKE ?", [`%${search}%`, `%${search}%`]);
-    res.json(results || []);
-});
+app.post('/api/admin/login', async (req, res, next) => {
+  try {
+    const username = cleanText(req.body.username, 100);
+    const password = String(req.body.password || '');
+    if (!username || !password) throw httpError('Username and password are required.');
+    if (!process.env.JWT_SECRET) throw httpError('Server login is not configured.', 503);
 
-app.post('/api/admin/products', verifyAdminSession, upload.single('productImage'), async (req, res) => {
-    const { name, price, stock_quantity, description } = req.body;
-    const imageUrl = req.file ? `/uploads/${req.file.filename}` : '';
-    const [result] = await db.query("INSERT INTO products (name, price, stock_quantity, description, image_url) VALUES (?, ?, ?, ?, ?)", [name, price, stock_quantity || 0, description, imageUrl]);
-    res.json({ success: true, productId: result.insertId });
-});
+    const [admins] = await db.query('SELECT id, username, password FROM admins WHERE username = ? LIMIT 1', [username]);
+    const admin = admins[0];
+    if (!admin) return res.status(401).json({ success: false, message: 'Invalid username or password.' });
 
-app.put('/api/admin/products/:id', verifyAdminSession, upload.single('productImage'), async (req, res) => {
-    const { name, price, stock_quantity, description } = req.body;
-    const productId = req.params.id;
-    if (req.file) {
-        await db.query("UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ?, image_url = ? WHERE id = ?", [name, price, stock_quantity || 0, description, `/uploads/${req.file.filename}`, productId]);
+    let passwordMatches = false;
+    if (String(admin.password).startsWith('$2')) {
+      passwordMatches = await bcrypt.compare(password, admin.password);
     } else {
-        await db.query("UPDATE products SET name = ?, price = ?, stock_quantity = ?, description = ? WHERE id = ?", [name, price, stock_quantity || 0, description, productId]);
+      // Temporary compatibility for existing MD5 rows. It upgrades the row after a successful login.
+      const legacyHash = crypto.createHash('md5').update(password).digest('hex');
+      const storedLegacyHash = String(admin.password);
+      passwordMatches = storedLegacyHash.length === legacyHash.length
+        && crypto.timingSafeEqual(Buffer.from(legacyHash), Buffer.from(storedLegacyHash));
+      if (passwordMatches) {
+        const upgradedHash = await bcrypt.hash(password, 12);
+        await db.query('UPDATE admins SET password = ? WHERE id = ?', [upgradedHash, admin.id]);
+      }
     }
+    if (!passwordMatches) return res.status(401).json({ success: false, message: 'Invalid username or password.' });
+
+    const token = jwt.sign({ adminId: admin.id, username: admin.username }, process.env.JWT_SECRET, { expiresIn: '8h' });
+    res.json({ success: true, token, expiresIn: '8h' });
+  } catch (error) { next(error); }
+});
+
+app.get('/api/products', async (req, res, next) => {
+  try {
+    const search = cleanText(req.query.search, 100);
+    const [products] = await db.query(
+      'SELECT id, name, price, stock_quantity, description, image_url FROM products WHERE name LIKE ? OR description LIKE ? ORDER BY id DESC LIMIT 100',
+      [`%${search}%`, `%${search}%`],
+    );
+    res.json(products.map(product => ({ ...product, image_url: publicImageUrl(product.image_url) })));
+  } catch (error) { next(error); }
+});
+
+app.post('/api/admin/products', verifyAdminSession, upload.single('productImage'), async (req, res, next) => {
+  try {
+    const { name, price, stockQuantity, description } = productValues(req.body);
+    const imageUrl = await storeImage(req.file);
+    const [result] = await db.query(
+      'INSERT INTO products (name, price, stock_quantity, description, image_url) VALUES (?, ?, ?, ?, ?)',
+      [name, price, stockQuantity, description, imageUrl],
+    );
+    res.status(201).json({ success: true, productId: result.insertId, imageUrl });
+  } catch (error) { next(error); }
+});
+
+app.put('/api/admin/products/:id', verifyAdminSession, upload.single('productImage'), async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    if (!Number.isInteger(productId) || productId < 1) throw httpError('Invalid product ID.');
+    const { name, price, stockQuantity, description } = productValues(req.body);
+    const imageUrl = req.file ? await storeImage(req.file) : null;
+    const [result] = imageUrl
+      ? await db.query('UPDATE products SET name=?, price=?, stock_quantity=?, description=?, image_url=? WHERE id=?', [name, price, stockQuantity, description, imageUrl, productId])
+      : await db.query('UPDATE products SET name=?, price=?, stock_quantity=?, description=? WHERE id=?', [name, price, stockQuantity, description, productId]);
+    if (!result.affectedRows) return res.status(404).json({ success: false, error: 'Product not found.' });
+    res.json({ success: true, imageUrl });
+  } catch (error) { next(error); }
+});
+
+app.delete('/api/admin/products/:id', verifyAdminSession, async (req, res, next) => {
+  try {
+    const [result] = await db.query('DELETE FROM products WHERE id = ?', [req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ success: false, error: 'Product not found.' });
     res.json({ success: true });
+  } catch (error) { next(error); }
 });
 
-app.delete('/api/admin/products/:id', verifyAdminSession, async (req, res) => {
-    await db.query("DELETE FROM products WHERE id = ?", [req.params.id]);
-    res.json({ success: true });
+app.post('/api/initiate-payment', async (req, res, next) => {
+  try {
+    const amount = Number(req.body.amount);
+    let phone = cleanText(req.body.phone, 20).replace(/[\s+-]/g, '');
+    if (phone.startsWith('0')) phone = `250${phone.slice(1)}`;
+    if (!Number.isFinite(amount) || amount <= 0 || !/^2507\d{8}$/.test(phone)) throw httpError('Enter a valid Rwandan phone number and amount.');
+    if (!process.env.PAYPACK_CLIENT_ID || !process.env.PAYPACK_CLIENT_SECRET) throw httpError('Payment gateway is not configured.', 503);
+    const auth = await axios.post('https://payments.paypack.rw/api/auth/agents/authorize', { client_id: process.env.PAYPACK_CLIENT_ID, client_secret: process.env.PAYPACK_CLIENT_SECRET }, { timeout: 15000 });
+    const payment = await axios.post('https://payments.paypack.rw/api/transactions/cashin', { amount, number: phone }, { headers: { Authorization: `Bearer ${auth.data.access}` }, timeout: 15000 });
+    res.json({ success: true, txRef: payment.data.ref });
+  } catch (error) { next(error); }
 });
 
-app.post('/api/admin/login', async (req, res) => {
-    const { username, password } = req.body;
-    const hashedPassword = crypto.createHash('md5').update(password).digest('hex');
-    const [results] = await db.query('SELECT * FROM admins WHERE username = ? AND password = ?', [username, hashedPassword]);
-    if (results.length > 0) {
-        const tempToken = crypto.randomBytes(16).toString('hex');
-        activeAdminTokens.add(tempToken);
-        res.json({ success: true, token: tempToken });
-    } else {
-        res.json({ success: false, message: 'Invalid credentials' });
-    }
-});
-
-app.post('/api/checkout', async (req, res) => {
-    const { fullName, email, phone, district, deliveryAddress, txRef, totalAmount, items } = req.body;
-    const productsSummary = items.map(item => `${item.name} (x${item.quantity})`).join(', ');
-
-    const [result] = await db.query("INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)", [fullName, email, phone, district, deliveryAddress || 'Not Provided', totalAmount, txRef, productsSummary]);
-    const orderId = result.insertId;
-
+app.post('/api/checkout', async (req, res, next) => {
+  let connection;
+  try {
+    const { fullName, email, phone, district, deliveryAddress, txRef, items } = req.body;
+    if (!cleanText(fullName, 150) || !cleanText(email, 150) || !cleanText(phone, 20) || !Array.isArray(items) || !items.length || !cleanText(txRef, 100)) throw httpError('Order details are incomplete.');
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    const orderItems = [];
+    let total = 0;
     for (const item of items) {
-        await db.query("UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?", [item.quantity, item.id]);
+      const id = Number(item.id); const quantity = Number(item.quantity);
+      if (!Number.isInteger(id) || !Number.isInteger(quantity) || quantity < 1) throw httpError('Invalid cart item.');
+      const [rows] = await connection.query('SELECT id, name, price, stock_quantity FROM products WHERE id = ? FOR UPDATE', [id]);
+      const product = rows[0];
+      if (!product || Number(product.stock_quantity) < quantity) throw httpError('One or more products are out of stock.', 409);
+      await connection.query('UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?', [quantity, id]);
+      total += Number(product.price) * quantity;
+      orderItems.push(`${product.name} (x${quantity})`);
     }
-
-    const itemsHtmlRows = items.map(item => `
-        <tr>
-            <td style="padding: 8px; border-bottom: 1px solid #eee;">${item.name}</td>
-            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: center;">${item.quantity}</td>
-            <td style="padding: 8px; border-bottom: 1px solid #eee; text-align: right;">${parseInt(item.price * item.quantity).toLocaleString()} RWF</td>
-        </tr>`).join('');
-
-    const customerHtml = `
-        <div style="font-family: sans-serif; line-height: 1.6; max-width: 600px; border: 1px solid #e0e0e0; padding: 25px; border-radius: 8px;">
-            <h1 style="color: #2ecc71;">Thank You, ${fullName}!</h1>
-            <p>Order Summary (#00${orderId}):</p>
-            <table style="width: 100%; border-collapse: collapse;">
-                ${itemsHtmlRows}
-            </table>
-            <p><strong>Total: ${parseInt(totalAmount).toLocaleString()} RWF</strong></p>
-        </div>`;
-
-    const adminHtml = `
-        <div style="font-family: sans-serif; padding: 25px; border: 1px solid #ccc;">
-            <h2>🚨 New Order #00${orderId}</h2>
-            <p>Client: ${fullName}</p>
-            <p>Items: ${productsSummary}</p>
-            <p>Total: ${parseInt(totalAmount).toLocaleString()} RWF</p>
-        </div>`;
-
-    sendNotificationEmail(email, "SYSOFT Order Confirmation", customerHtml);
-    sendNotificationEmail("amahorojustin04@gmail.com", "🚨 New Order Dispatch", adminHtml);
-
-    res.json({ success: true, orderId: orderId });
+    const [result] = await connection.query(
+      "INSERT INTO orders (full_name, email, phone, district, delivery_address, total_amount, payment_method, transaction_reference, payment_status, products_ordered) VALUES (?, ?, ?, ?, ?, ?, 'MTN_MOMO', ?, 'PENDING', ?)",
+      [cleanText(fullName, 150), cleanText(email, 150), cleanText(phone, 20), cleanText(district, 100), cleanText(deliveryAddress, 500) || 'Not provided', total, cleanText(txRef, 100), orderItems.join(', ')],
+    );
+    await connection.commit();
+    res.status(201).json({ success: true, orderId: result.insertId, totalAmount: total, paymentStatus: 'PENDING' });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    next(error);
+  } finally { if (connection) connection.release(); }
 });
 
-app.get('/api/admin/orders', verifyAdminSession, async (req, res) => {
-    const [results] = await db.query("SELECT * FROM orders ORDER BY id DESC");
-    res.json(results);
+app.get('/api/admin/orders', verifyAdminSession, async (_req, res, next) => {
+  try { const [orders] = await db.query('SELECT * FROM orders ORDER BY id DESC LIMIT 200'); res.json(orders); } catch (error) { next(error); }
 });
 
-app.patch('/api/admin/orders/:id/status', verifyAdminSession, async (req, res) => {
-    await db.query("UPDATE orders SET payment_status = ? WHERE id = ?", [req.body.payment_status, req.params.id]);
+app.patch('/api/admin/orders/:id/status', verifyAdminSession, async (req, res, next) => {
+  try {
+    const allowed = ['PENDING', 'COMPLETED', 'CANCELLED'];
+    const status = String(req.body.payment_status || '').toUpperCase();
+    if (!allowed.includes(status)) throw httpError('Invalid order status.');
+    const [result] = await db.query('UPDATE orders SET payment_status = ? WHERE id = ?', [status, req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ success: false, error: 'Order not found.' });
     res.json({ success: true });
+  } catch (error) { next(error); }
 });
 
-app.get(/.*/, (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+app.delete('/api/admin/orders/:id', verifyAdminSession, async (req, res, next) => {
+  try {
+    const [result] = await db.query('DELETE FROM orders WHERE id = ?', [req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ success: false, error: 'Order not found.' });
+    res.json({ success: true });
+  } catch (error) { next(error); }
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.use('/api', (_req, res) => res.status(404).json({ success: false, error: 'API route not found.' }));
+app.get(/.*/, (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+app.use((error, _req, res, _next) => {
+  console.error(error.response?.data || error);
+  if (error instanceof multer.MulterError) return res.status(400).json({ success: false, error: error.message });
+  res.status(error.status || 500).json({ success: false, error: error.message || 'Internal server error.' });
+});
+
+if (require.main === module) app.listen(PORT, () => console.log(`SYSOFT API listening on port ${PORT}`));
+module.exports = app;
